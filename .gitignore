@@ -1,0 +1,13 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local
+.vscode
+.idea
+
+# 项目排除路径
+/vite.config.d.ts
+/vite.config.js
