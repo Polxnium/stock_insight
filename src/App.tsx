@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { TrendingUp, BarChart3, Search, Flame, Sparkles, Wallet, Target, Users, Globe } from 'lucide-react';
 import { IndexBar } from '@/components/IndexBar';
-import { MarketOverview } from '@/components/MarketOverview';
 import { WatchList } from '@/components/WatchList';
 import { PositionList } from '@/components/PositionList';
 import { NewsFeed } from '@/components/NewsFeed';
@@ -60,7 +59,6 @@ export default function App() {
           </div>
         </div>
         <IndexBar />
-        <MarketOverview />
         
         {/* Tab 切换 */}
         <div className="flex border-t border-ink-100">

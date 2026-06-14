@@ -34,10 +34,14 @@ export function StockSelectorPage() {
   const watchlist = useAppStore((s) => s.watchlist);
   const setStrategyWeights = useAppStore((s) => s.setStrategyWeights);
   const abortRef = useRef<AbortController | null>(null);
+  // 缓存全量股票列表，避免 filter 变化时重新拉取
+  const rawStockListRef = useRef<StockBasicInfo[]>([]);
 
   // ── 状态 ──────────────────────────────────────────────
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyConfig>(STRATEGIES[1]);
   const [customWeights, setCustomWeights] = useState({ fundamental: 35, technical: 35, money: 30 });
+  // 用于标记是否需要重新拉取全量列表（仅初始加载和手动刷新时为 true）
+  const [fetchTrigger, setFetchTrigger] = useState(0);
 
   // 策略切换时同步到 store
   const handleStrategyChange = (strategy: StrategyConfig) => {
@@ -71,7 +75,7 @@ export function StockSelectorPage() {
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // ── 预筛选：根据基本条件快速过滤 ──────────────────────
+  // ── 预筛选：根据基本条件快速过滤（纯计算，不触发副作用） ──────────────────────
   const preFilterStocks = useCallback((list: StockBasicInfo[]): StockBasicInfo[] => {
     let result = [...list];
 
@@ -106,7 +110,10 @@ export function StockSelectorPage() {
   }, [filterOptions.marketCap, filterOptions.filterExtreme]);
 
   // ── 单只股票深度分析 ──────────────────────────────────
-  const analyzeOne = async (stock: StockBasicInfo): Promise<SelectorStock> => {
+  const analyzeOne = async (stock: StockBasicInfo, signal?: AbortSignal): Promise<SelectorStock> => {
+    if (signal?.aborted) {
+      return analyzeStock(stock.code, stock.name, null, null, null, [], [], customWeights);
+    }
     try {
       const [quoteResult, fundamentalResult, moneyFlowResult, reportsResult, klineResult] = await Promise.all([
         fetchQuotes([stock.code]).then(res => res.data[0] || null).catch(() => null),
@@ -115,6 +122,10 @@ export function StockSelectorPage() {
         fetchFinReport(stock.code).then(res => res.data).catch(() => []),
         fetchKline(stock.code, 60).then(res => res.data).catch(() => []),
       ]);
+
+      if (signal?.aborted) {
+        return analyzeStock(stock.code, stock.name, null, null, null, [], [], customWeights);
+      }
 
       return analyzeStock(stock.code, stock.name, quoteResult, fundamentalResult, moneyFlowResult, reportsResult, klineResult, customWeights);
     } catch {
@@ -132,7 +143,7 @@ export function StockSelectorPage() {
       if (signal?.aborted) break;
 
       const batch = candidates.slice(i, i + BATCH_SIZE);
-      const batchResults = await Promise.all(batch.map(analyzeOne));
+      const batchResults = await Promise.all(batch.map(s => analyzeOne(s, signal)));
       results.push(...batchResults);
 
       setProgress({ current: Math.min(i + BATCH_SIZE, total), total });
@@ -142,6 +153,7 @@ export function StockSelectorPage() {
   };
 
   // ── 主流程：获取全量 → 预筛选 → 量化分析 → 排序 ──────
+  // 仅在初始加载或手动刷新时触发，filter 变化不重新拉取
   const runFullAnalysis = useCallback(async () => {
     // 取消之前的请求
     if (abortRef.current) {
@@ -160,6 +172,7 @@ export function StockSelectorPage() {
       if (controller.signal.aborted) return;
 
       setAllStockList(stockList);
+      rawStockListRef.current = stockList;
       setPhase('pre_filtering');
 
       // 2. 预筛选
@@ -187,12 +200,22 @@ export function StockSelectorPage() {
       setError(e?.message || '分析失败');
       setPhase('idle');
     }
-  }, [preFilterStocks]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preFilterStocks, customWeights]);
 
-  // 首次加载 & 自选股范围变化时触发
+  // 首次加载 & 手动刷新时触发分析（filter 变化不触发）
   useEffect(() => {
     runFullAnalysis();
-  }, [runFullAnalysis]);
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchTrigger]);
+
+  // 手动刷新
+  const handleRefresh = useCallback(() => {
+    setFetchTrigger(t => t + 1);
+  }, []);
 
   // ── 前端二次筛选 ──────────────────────────────────────
   const filteredStocks = useMemo(() => {
@@ -290,7 +313,7 @@ export function StockSelectorPage() {
               </span>
             )}
             <button
-              onClick={runFullAnalysis}
+              onClick={handleRefresh}
               disabled={isRunning}
               className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-ink-900 rounded-lg hover:bg-ink-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
@@ -320,7 +343,7 @@ export function StockSelectorPage() {
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
             {error}
-            <button onClick={runFullAnalysis} className="ml-4 underline">重试</button>
+            <button onClick={handleRefresh} className="ml-4 underline">重试</button>
           </div>
         )}
 
