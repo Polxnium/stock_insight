@@ -418,6 +418,36 @@ function QuoteCard({ quote, code, klines, fundamental, updatedAt, loading, model
   const ydayPrevClose = prevBar && Number.isFinite(prevBar.changePct)
     ? prevBar.close / (1 + prevBar.changePct / 100)
     : NaN;
+
+  // ── 计算昨日量比和换手率 ────────────────────────
+  // 量比 = 昨日成交量 / 昨日前5日均量
+  // 换手率 = 昨日成交量 / 流通股本 × 100（流通股本从今日数据反推）
+  let ydayVolumeRatio: number | null = null;
+  let ydayTurnover: number | null = null;
+  if (prevBar && klines.length >= 2) {
+    const prevIdx = lastBar?.date === todayDate ? klines.length - 2 : klines.length - 1;
+    const start = Math.max(0, prevIdx - 5);
+    const histBars = klines.slice(start, prevIdx);
+    if (histBars.length > 0) {
+      const avgVol = histBars.reduce((s, b) => s + b.volume, 0) / histBars.length;
+      if (avgVol > 0) {
+        ydayVolumeRatio = Math.round((prevBar.volume / avgVol) * 100) / 100;
+      }
+    }
+    // 从今日换手率反推流通股本，再算昨日换手率
+    // fundamental.volume 是“手”，kline.volume 是“股”，统一转股
+    const todayVolGu = fundamental?.volume != null
+      ? fundamental.volume * 100
+      : (lastBar?.volume ?? null);
+    const todayTurnover = fundamental?.turnover ?? null;
+    if (todayVolGu && todayVolGu > 0 && todayTurnover && todayTurnover > 0) {
+      const floatSharesGu = todayVolGu / (todayTurnover / 100); // 股
+      const ydayT = (prevBar.volume / floatSharesGu) * 100;     // prevBar.volume 已是股
+      if (Number.isFinite(ydayT) && ydayT > 0) {
+        ydayTurnover = Math.round(ydayT * 100) / 100;
+      }
+    }
+  }
   return (
     <div className="rounded-lg border border-ink-200 bg-white">
       <div className="flex items-start justify-between border-b border-ink-100 px-4 py-3">
@@ -486,8 +516,8 @@ function QuoteCard({ quote, code, klines, fundamental, updatedAt, loading, model
             low={prevBar?.low ?? NaN}
             prevClose={ydayPrevClose}
             changePct={prevBar?.changePct ?? NaN}
-            turnover={null}
-            volumeRatio={null}
+            turnover={ydayTurnover}
+            volumeRatio={ydayVolumeRatio}
           />
         </div>
       )}
@@ -968,22 +998,21 @@ const descEPS = (v: number | null | undefined): FundDesc | null => {
 };
 const descTurnover = (v: number | null | undefined): FundDesc | null => {
   if (v == null || !Number.isFinite(v)) return null;
-  if (v < 1)  return { text: '成交冷淡', bull: 'down' };
-  if (v < 3)  return { text: '成交清淡', bull: 'neutral' };
-  if (v < 5)  return { text: '换手正常', bull: 'neutral' };
-  if (v < 8)  return { text: '换手活跃', bull: 'up' };
-  if (v < 12) return { text: '换手较高', bull: 'neutral' };
-  return        { text: '换手过热', bull: 'down' };
+  if (v < 1)  return { text: '低换手', bull: 'neutral' };
+  if (v < 3)  return { text: '正常换手', bull: 'neutral' };
+  if (v < 7)  return { text: '活跃换手', bull: 'up' };
+  if (v < 15) return { text: '高换手', bull: 'up' };
+  return        { text: '超高换手', bull: 'down' };
 };
 const descVolumeRatio = (v: number | null | undefined): FundDesc | null => {
   if (v == null || !Number.isFinite(v)) return null;
-  if (v < 0.5) return { text: '严重缩量', bull: 'down' };
-  if (v < 0.8) return { text: '温和缩量', bull: 'down' };
-  if (v < 1.2) return { text: '量能平稳', bull: 'neutral' };
-  if (v < 1.5) return { text: '温和放量', bull: 'up' };
+  if (v < 0.5) return { text: '缩量', bull: 'down' };
+  if (v < 1.0) return { text: '地量', bull: 'neutral' };
+  if (v < 1.5) return { text: '温和放量', bull: 'neutral' };
   if (v < 2.5) return { text: '明显放量', bull: 'up' };
-  if (v < 5)   return { text: '大幅放量', bull: 'up' };
-  return         { text: '爆量警惕', bull: 'neutral' };
+  if (v < 5.0) return { text: '大量放量', bull: 'up' };
+  if (v < 10)  return { text: '巨量放量', bull: 'up' };
+  return         { text: '爆量', bull: 'down' };
 };
 const descMarketCap = (v: number | null | undefined): FundDesc | null => {
   if (v == null || !Number.isFinite(v)) return null;
@@ -1168,9 +1197,9 @@ function DayPanel({
   return (
     <div className="flex-1 px-3 py-2">
       <div className="mb-1.5 text-[11px] font-medium text-ink-400">{title}</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-[3px] text-[11px]">
+      <div className="flex gap-x-6 gap-y-[3px] text-[11px]">
         {/* 左列 */}
-        <div className="grid grid-cols-[1.8rem,1fr,3rem] gap-x-1">
+        <div className="grid grid-cols-[auto,auto,auto] items-center gap-x-1.5">
           <span className="text-ink-400">开盘</span>
           <span className="text-right text-ink-700">{fmtPrice(open)}</span>
           <PctCell v={pct(open)} />
@@ -1181,19 +1210,21 @@ function DayPanel({
 
           <span className="text-ink-400">振幅</span>
           <span className="text-right text-ink-700">{Number.isFinite(amplitude) ? `${amplitude.toFixed(2)}%` : '—'}</span>
-          <span className="w-[3rem]" />
+          <span />
 
           {showExtra && (
             <>
               <span className="text-ink-400">量比</span>
               <span className="text-right text-ink-700">{volumeRatio != null ? volumeRatio.toFixed(2) : '—'}</span>
-              <span className="w-[3rem]" />
+              {volumeRatio != null ? (
+                (() => { const d = descVolumeRatio(volumeRatio); return d ? <MiniBadge {...d} /> : <span />; })()
+              ) : <span />}
             </>
           )}
         </div>
 
         {/* 右列 */}
-        <div className="grid grid-cols-[1.8rem,1fr,3rem] gap-x-1">
+        <div className="grid grid-cols-[auto,auto,auto] items-center gap-x-1.5">
           <span className="text-ink-400">收盘</span>
           <span className="text-right text-ink-700">{fmtPrice(close)}</span>
           <PctCell v={changePct} />
@@ -1202,19 +1233,17 @@ function DayPanel({
           <span className="text-right text-ink-700">{fmtPrice(low)}</span>
           <PctCell v={pct(low)} />
 
-          {!showExtra && (
-            <>
-              <span className="text-ink-400">均价</span>
-              <span className="text-right text-ink-700">{fmtPrice(avgCost)}</span>
-              <PctCell v={pct(avgCost)} />
-            </>
-          )}
+          <span className="text-ink-400">均价</span>
+          <span className="text-right text-ink-700">{fmtPrice(avgCost)}</span>
+          <PctCell v={pct(avgCost)} />
 
           {showExtra && (
             <>
               <span className="text-ink-400">换手</span>
               <span className="text-right text-ink-700">{turnover != null ? turnover.toFixed(2) + '%' : '—'}</span>
-              <span className="w-[3rem]" />
+              {turnover != null ? (
+                (() => { const d = descTurnover(turnover); return d ? <MiniBadge {...d} /> : <span />; })()
+              ) : <span />}
             </>
           )}
         </div>
@@ -1228,6 +1257,22 @@ function PctCell({ v }: { v: number }) {
   return (
     <span className={cn('text-right text-[11px]', colorClass(v))}>
       {Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : '—'}
+    </span>
+  );
+}
+
+/** 迷你状态标签（用于 DayPanel 量比/换手描述，纯文字无背景） */
+function MiniBadge({ text, bull }: FundDesc) {
+  return (
+    <span className={cn(
+      'text-right whitespace-nowrap',
+      bull === 'up'
+        ? 'text-up'
+        : bull === 'down'
+          ? 'text-down'
+          : 'text-ink-500',
+    )}>
+      {text}
     </span>
   );
 }

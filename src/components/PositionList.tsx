@@ -254,11 +254,11 @@ export function PositionList() {
                         </div>
                         <div className="text-[10px] text-ink-400">{stock.code}</div>
                       </div>
-                      <div className="flex items-center gap-2 ml-2">
+                      <div className="ml-2 grid shrink-0 grid-cols-[3.5rem_3.75rem_auto_auto] justify-items-end items-center gap-x-1">
                         {stock.price !== undefined && (
                           <>                            
-                            <span className="tabular text-xs">{fmtPrice(stock.price)}</span>
-                            <span className={cn('tabular text-[10px]', colorClass(stock.changePct ?? 0))}>
+                            <span className="w-full text-right tabular text-xs">{fmtPrice(stock.price)}</span>
+                            <span className={cn('w-full text-right tabular text-[10px]', colorClass(stock.changePct ?? 0))}>
                               {fmtPct(stock.changePct ?? 0)}
                             </span>
                           </>
@@ -307,13 +307,13 @@ export function PositionList() {
                 </div>
                 <div className="text-[10px] text-ink-400">{p.code}</div>
               </div>
-              <div className="ml-2 flex shrink-0 items-center gap-2 tabular">
-                <span className={cn('text-xs', colorClass(q?.changePct ?? 0))}>
+              <div className="ml-2 grid shrink-0 grid-cols-[3.5rem_3.75rem_2.75rem_1.25rem] justify-items-end items-center gap-x-1 tabular">
+                <span className={cn('text-xs w-full text-right', colorClass(q?.changePct ?? 0))}>
                   {fmtPrice(q?.price ?? NaN)}
                 </span>
                 <span
                   className={cn(
-                    'rounded px-1 py-0.5 text-[11px]',
+                    'w-full text-right rounded px-1 py-0.5 text-[11px]',
                     (q?.changePct ?? 0) >= 0
                       ? 'bg-up/10 text-up'
                       : 'bg-down/10 text-down',
@@ -321,12 +321,12 @@ export function PositionList() {
                 >
                   {fmtPct(q?.changePct ?? NaN)}
                 </span>
-                <span className="text-[10px] text-ink-400">
+                <span className="w-full text-right text-[10px] text-ink-400">
                   {Number.isFinite(getAmplitude(q)) ? `${getAmplitude(q).toFixed(1)}%` : '—'}
                 </span>
                 <button
                   onClick={(e) => { e.stopPropagation(); removePosition(p.code); }}
-                  className="text-ink-300 opacity-0 transition group-hover:opacity-100 hover:text-down"
+                  className="flex items-center justify-center text-ink-300 opacity-0 transition group-hover:opacity-100 hover:text-down"
                   title="移除"
                 >
                   <X size={12} />

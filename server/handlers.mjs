@@ -275,16 +275,28 @@ async function handleFundamental(req, res, url) {
   if (!/^(sh|sz)\d{6}$/i.test(code)) return json(res, 400, { ok: false, error: '无效 code' });
 
   // 腾讯财经实时行情（含基本面指标），GBK 编码
-  const target = `https://qt.gtimg.cn/q=${code}`;
+  const qtTarget = `https://qt.gtimg.cn/q=${code}`;
+  // 腾讯日K线：取近7个交易日，用于计算量比（5日均量）
+  const klineTarget = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${code},day,,,7,qfq`;
+
   try {
     const data = await withCache(`f10:${code}`, 60_000, async () => {
-      const r = await fetchWithRetry(target, {
-        headers: { Referer: 'https://finance.qq.com/' },
-        timeoutMs: 10000,
-        retries: 3,
-        retryDelayMs: 500,
-      });
-      const buf = Buffer.from(await r.arrayBuffer());
+      // 并行请求腾讯行情 + 腾讯日K线
+      const [qtRes, klineRes] = await Promise.all([
+        fetchWithRetry(qtTarget, {
+          headers: { Referer: 'https://finance.qq.com/' },
+          timeoutMs: 10000,
+          retries: 3,
+          retryDelayMs: 500,
+        }),
+        fetch(klineTarget, {
+          headers: { 'User-Agent': COMMON_HEADERS['User-Agent'], Referer: 'https://finance.qq.com/' },
+          signal: AbortSignal.timeout(8000),
+        }).catch(() => null),
+      ]);
+
+      // ── 解析腾讯行情 ──
+      const buf = Buffer.from(await qtRes.arrayBuffer());
       const text = iconv.decode(buf, 'gbk');
       const m = text.match(/"([^"]+)"/);
       if (!m) throw new Error('腾讯接口返回格式异常');
@@ -292,6 +304,30 @@ async function handleFundamental(req, res, url) {
       const n = (i) => { const v = parseFloat(f[i]); return Number.isFinite(v) && v !== 0 ? v : null; };
       const lowRaw = (f[35] || '').split('/')[0];
       const low = parseFloat(lowRaw) || null;
+      const todayVol = n(36); // 今日成交量（手）
+
+      // ── 从 K 线计算量比 = 今日成交量 / 近5日平均成交量 ──
+      let volumeRatio = null;
+      if (klineRes && todayVol) {
+        try {
+          const kj = await klineRes.json();
+          const stockData = kj?.data?.[code];
+          const klines = stockData?.qfqday || stockData?.day;
+          if (Array.isArray(klines) && klines.length >= 2) {
+            // 排除最后一根（可能是今天），取前5根计算均量
+            const historical = klines.slice(0, -1); // 去掉今天
+            const count = Math.min(historical.length, 5);
+            if (count > 0) {
+              const sum = historical.slice(-count).reduce((s, k) => s + (parseFloat(k[5]) || 0), 0);
+              const avg5 = sum / count;
+              if (avg5 > 0) {
+                volumeRatio = Math.round((todayVol / avg5) * 100) / 100; // 保留2位小数
+              }
+            }
+          }
+        } catch (_) { /* K线解析失败，量比留 null */ }
+      }
+
       return {
         code,
         name: f[1] || null,
@@ -300,12 +336,12 @@ async function handleFundamental(req, res, url) {
         open: n(33),
         high: n(34),
         low,
-        volume: n(36),
+        volume: todayVol,
         amount: n(37) ? n(37) * 10000 : null,
         changePct: n(32),
         change: n(31),
-        turnover: n(56),
-        volumeRatio: n(53),
+        turnover: n(38),              // 换手率：腾讯 f[38]（已验证准确）
+        volumeRatio,                   // 量比：今日成交量 / 近5日均量
         eps: null,
         peDyn: n(39),
         peStatic: null,
