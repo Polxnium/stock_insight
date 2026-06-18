@@ -1,15 +1,9 @@
 import { useState } from 'react';
-import { ChevronsLeft, ChevronsRight, Zap, TrendingUp, Building2, Globe } from 'lucide-react';
+import { Zap, TrendingUp, Building2, Globe } from 'lucide-react';
 import { fetchNews } from '@/api';
 import { usePolling } from '@/hooks/usePolling';
 import { adaptiveInterval } from '@/lib/marketTime';
-import { FreshBadge } from './FreshBadge';
 import { cn } from '@/lib/format';
-
-interface NewsFeedProps {
-  collapsed?: boolean;
-  onToggle?: () => void;
-}
 
 type NewsCategory = 'all' | 'important' | 'industry' | 'macro';
 
@@ -44,10 +38,10 @@ function categorizeNews(title: string): NewsCategory {
   return 'all';
 }
 
-export function NewsFeed({ collapsed = false, onToggle }: NewsFeedProps) {
+export function NewsFeed() {
   const [activeCategory, setActiveCategory] = useState<NewsCategory>('all');
   
-  const { data, loading, updatedAt } = usePolling(
+  const { data, loading } = usePolling(
     () => fetchNews(60),
     () => adaptiveInterval(20_000, 120_000),
   );
@@ -57,44 +51,8 @@ export function NewsFeed({ collapsed = false, onToggle }: NewsFeedProps) {
     ? list 
     : list.filter(n => categorizeNews(n.title) === activeCategory);
 
-  /* ── 收起态：细条 + 展开按钮 ─────────────────────── */
-  if (collapsed) {
-    return (
-      <div className="flex h-full min-h-[200px] flex-col items-center justify-center rounded-lg border border-ink-200 bg-gradient-to-b from-white to-ink-50">
-        <button
-          onClick={onToggle}
-          title="展开财经快讯"
-          className="group flex flex-col items-center gap-3 rounded-lg px-2 py-4 transition-all hover:bg-white hover:shadow-sm"
-        >
-          <ChevronsLeft size={18} className="text-ink-400 transition-transform group-hover:scale-110 group-hover:text-ink-700" />
-          <span
-            className="text-[11px] font-medium text-ink-500 select-none group-hover:text-ink-800"
-            style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
-          >
-            财经快讯
-          </span>
-        </button>
-      </div>
-    );
-  }
-
-  /* ── 展开态 ───────────────────────────────────────── */
   return (
-    <div className="h-[715px] flex flex-col rounded-lg border border-ink-200 bg-white">
-      <div className="flex shrink-0 items-center justify-between border-b border-ink-100 px-4 py-2">
-        <h2 className="text-sm font-medium">财经快讯</h2>
-        <div className="flex items-center gap-2">
-          <FreshBadge ts={updatedAt} loading={loading && list.length === 0} className="text-xs" />
-          <button
-            onClick={onToggle}
-            title="收起财经快讯"
-            className="rounded-md bg-ink-50 p-1.5 text-ink-500 transition-all hover:bg-ink-900 hover:text-white hover:shadow-sm"
-          >
-            <ChevronsRight size={16} />
-          </button>
-        </div>
-      </div>
-
+    <div className="flex h-full flex-col">
       {/* 分类标签 */}
       <div className="flex shrink-0 gap-1 border-b border-ink-100 px-3 py-1.5">
         {categories.map((cat) => {
@@ -107,8 +65,8 @@ export function NewsFeed({ collapsed = false, onToggle }: NewsFeedProps) {
               className={cn(
                 'flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors',
                 isActive
-                  ? 'bg-ink-900 text-white'
-                  : 'text-ink-500 hover:bg-ink-100 hover:text-ink-700',
+                  ? 'bg-ink-100 text-ink-800 font-medium'
+                  : 'text-ink-500 hover:bg-ink-50 hover:text-ink-700',
               )}
             >
               <Icon size={10} />
@@ -136,7 +94,7 @@ export function NewsFeed({ collapsed = false, onToggle }: NewsFeedProps) {
                 target="_blank"
                 rel="noreferrer"
                 className={cn(
-                  'block min-h-[60px] text-sm leading-snug hover:text-ink-950',
+                  'block min-h-[48px] text-xs leading-snug hover:text-ink-950',
                   isImportant ? 'font-medium text-ink-900' : 'text-ink-800'
                 )}
               >

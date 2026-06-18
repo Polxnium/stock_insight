@@ -18,7 +18,7 @@
  */
 
 import { useMemo, useRef, useState, useEffect } from 'react';
-import { RefreshCw, Sparkles, Wallet, LineChart, Newspaper, Square, ScrollText, X, Loader2, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { RefreshCw, Sparkles, Wallet, LineChart, Square, X, Loader2, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { useAppStore } from '@/store';
 import { LLM_MODELS } from '@/config/llm';
 import {
@@ -32,13 +32,12 @@ import {
   fetchMoneyFlow,
   fetchNews,
   fetchQuotes,
-  fetchStockProfile,
 } from '@/api';
 import { usePolling } from '@/hooks/usePolling';
 import { adaptiveInterval } from '@/lib/marketTime';
 import { buildAnalysisPrompt, buildFixupPrompt, parseAnalysisJSON } from '@/lib/analysisPrompt';
 import { summarizeTechnicals } from '@/lib/indicators';
-import { pickRelatedNews, pickIndustryNews, getIndustryKeywords } from '@/lib/newsMatch';
+import { pickRelatedNews } from '@/lib/newsMatch';
 import { cn, colorClass, fmtAmount, fmtPct, fmtPrice } from '@/lib/format';
 import { FreshBadge } from './FreshBadge';
 import type { AnalysisResult, FinReport, KlineBar, MFKlineBar, MoneyFlow } from '@/types';
@@ -78,7 +77,8 @@ export function StockAnalysis() {
     () => selectedCode
       ? fetchMoneyFlow(selectedCode)
       : Promise.resolve({ data: null as never, ts: Date.now() }),
-    () => adaptiveInterval(10_000, 120_000),
+    // 资金流实时性强：盘中 5s 刷新，盘后 60s（服务端无缓存，每次实时查询）
+    () => adaptiveInterval(5_000, 60_000),
     [selectedCode],
   );
   const moneyflow = mfQ.data?.data ?? null;
@@ -112,69 +112,6 @@ export function StockAnalysis() {
     [selectedCode],
   );
   const finReports = finrQ.data?.data ?? [];
-
-  const annQ = usePolling(
-    () => selectedCode
-      ? fetchAnnouncements(selectedCode, 8)
-      : Promise.resolve({ data: [], ts: Date.now() }),
-    () => adaptiveInterval(10 * 60_000, 30 * 60_000),
-    [selectedCode],
-  );
-  const announcements = annQ.data?.data ?? [];
-
-  // 行业分类（东方财富 F10）
-  const profileQ = usePolling(
-    () => selectedCode
-      ? fetchStockProfile(selectedCode)
-      : Promise.resolve({ data: null as never, ts: Date.now() }),
-    () => adaptiveInterval(60 * 60_000, 120 * 60_000), // 1小时刷新
-    [selectedCode],
-  );
-  const industryEM = profileQ.data?.data?.industry ?? [];
-
-  // 财经快讯 → 筛选与当前股票相关的新闻（按股票名/代码匹配）
-  const newsQ = usePolling(
-    () => fetchNews(200), // 扩大新闻池，提高行业新闻命中率
-    () => adaptiveInterval(30_000, 120_000),
-  );
-  const relatedNews = useMemo(
-    () => quote
-      ? pickRelatedNews(newsQ.data?.data ?? [], { name: quote.name, code: quote.code, limit: 15 })
-      : [],
-    [newsQ.data, quote],
-  );
-
-  const industryKeywords = useMemo(
-    () => quote ? getIndustryKeywords(quote.name, industryEM) : [],
-    [quote, industryEM],
-  );
-  // 行业动态：匹配行业关键词但排除个股自身新闻（避免与「相关新闻」重复）
-  const industryNews = useMemo(() => {
-    if (!quote) return [];
-    const excludeKeys = [quote.name, quote.name.slice(0, 3), quote.code.replace(/^(sh|sz)/i, '')];
-    return pickIndustryNews(newsQ.data?.data ?? [], industryKeywords, excludeKeys, 12);
-  }, [newsQ.data, quote, industryKeywords]);
-
-  // 股价旁异动公告：今日最重要的公告（非中性优先）
-  const alertAnn = useMemo(() => {
-    if (!announcements.length) return null;
-    const todayStr = (() => {
-      const d = new Date();
-      return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    })();
-    const today = announcements.filter((a) => a.date.startsWith(todayStr));
-    const pool  = today.length ? today : announcements.slice(0, 3);
-    const sorted = [...pool].sort((a, b) => {
-      const sa = analyzeAnn(a.title, a.type);
-      const sb = analyzeAnn(b.title, b.type);
-      if (sa.bull !== 'neutral' && sb.bull === 'neutral') return -1;
-      if (sa.bull === 'neutral' && sb.bull !== 'neutral') return 1;
-      return 0;
-    });
-    const ann  = sorted[0];
-    const sent = analyzeAnn(ann.title, ann.type);
-    return { title: ann.title.length > 28 ? ann.title.slice(0, 28) + '…' : ann.title, ...sent, url: ann.url, isToday: today.length > 0 };
-  }, [announcements]);
 
   // 技术面文字摘要（由 K线数据派生，K线变才重算）
   const technicalText = useMemo(
@@ -224,8 +161,8 @@ export function StockAnalysis() {
         fundamental,
         moneyflow,
         klines,
-        announcements,
-        relatedNews,
+        announcements: [],
+        relatedNews: relatedNews,
       });
 
       // 流式输出：实时回显给用户
@@ -295,28 +232,19 @@ export function StockAnalysis() {
         quote={quote}
         code={selectedCode}
         klines={klines}
+        fundamental={fundamental}
         updatedAt={quoteQ.updatedAt}
         loading={quoteQ.loading && !quote}
         modelLabel={modelCfg.label}
         analyzing={loading}
-        alertAnn={alertAnn}
         onAnalyze={handleAnalyze}
         onStop={handleStop}
       />
 
       {/* ── 资金流向速览 ────────────────────────────── */}
-      <MoneyFlowIndicator key={selectedCode} data={moneyflow} loading={mfQ.loading} />
 
-      {/* ── 数据维度：上行 近期公告(3/5) + 基本面(2/5)，下行 1:1 ── */}
+      {/* ── 数据维度：上行 技术面(1/2) + 资金面(1/2)，下行 基本面 ── */}
       <div className="space-y-3">
-        <div className="grid grid-cols-5 items-stretch gap-3">
-          <div className="col-span-3 h-full">
-            <AnnouncementCard data={announcements} relatedNews={relatedNews} industryNews={industryNews} ts={annQ.updatedAt} loading={annQ.loading && !announcements.length} />
-          </div>
-          <div className="col-span-2 h-full">
-            <FundamentalCard data={fundamental} ts={fundQ.updatedAt} loading={fundQ.loading && !fundamental} error={fundQ.error} reports={finReports} reportsLoading={finrQ.loading && !finReports.length} />
-          </div>
-        </div>
         <div className="grid grid-cols-2 gap-3">
           <TechnicalCard text={technicalText} bars={klines} ts={klineQ.updatedAt} loading={klineQ.loading && !klines.length} />
           <MoneyFlowCard
@@ -325,6 +253,7 @@ export function StockAnalysis() {
             error={mfQ.error}
           />
         </div>
+        <FundamentalCard data={fundamental} ts={fundQ.updatedAt} loading={fundQ.loading && !fundamental} error={fundQ.error} reports={finReports} reportsLoading={finrQ.loading && !finReports.length} />
       </div>
 
       {/* ── AI 分析弹窗 ───────────────────────────────── */}
@@ -463,19 +392,19 @@ function MoneyFlowIndicator({ data, loading }: { data: MoneyFlow | null; loading
 // ============================================================
 
 interface QuoteCardProps {
-  quote:      any;
-  code:       string;
-  klines:     KlineBar[];
-  updatedAt:  number | null;
-  loading:    boolean;
-  modelLabel: string;
-  analyzing:  boolean;
-  alertAnn:   { title: string; label: string; bull: 'up' | 'down' | 'neutral'; url?: string; isToday: boolean } | null;
-  onAnalyze:  () => void;
-  onStop:     () => void;
+  quote:       any;
+  code:        string;
+  klines:      KlineBar[];
+  fundamental: any;
+  updatedAt:   number | null;
+  loading:     boolean;
+  modelLabel:  string;
+  analyzing:   boolean;
+  onAnalyze:   () => void;
+  onStop:      () => void;
 }
 
-function QuoteCard({ quote, code, klines, updatedAt, loading, modelLabel, analyzing, alertAnn, onAnalyze, onStop }: QuoteCardProps) {
+function QuoteCard({ quote, code, klines, fundamental, updatedAt, loading, modelLabel, analyzing, onAnalyze, onStop }: QuoteCardProps) {
   // ── 昨日行情：从 K 线找最近完结的交易日 ──────────────────────
   const todayDate = quote?.date ?? '';
   const lastBar   = klines[klines.length - 1] ?? null;
@@ -495,51 +424,19 @@ function QuoteCard({ quote, code, klines, updatedAt, loading, modelLabel, analyz
         <div>
           {/* 股票名称和价格在同一行 */}
           <div className="flex items-baseline gap-2 flex-wrap">
-            <h2 className="text-base font-semibold">{quote?.name || '加载中…'}</h2>
-            <span className="text-xs text-ink-400">{code.replace(/^(sh|sz)/i, '')}</span>
+            <h2 className="text-xs font-semibold">{quote?.name || '加载中…'}</h2>
+            <span className="text-[10px] text-ink-400">{code.replace(/^(sh|sz)/i, '')}</span>
             {quote && (
               <>
-                <span className={cn('tabular text-xl font-semibold', colorClass(quote.changePct))}>
+                <span className={cn('tabular text-base font-semibold', colorClass(quote.changePct))}>
                   {fmtPrice(quote.price)}
                 </span>
-                <span className={cn('tabular text-sm', colorClass(quote.changePct))}>
+                <span className={cn('tabular text-xs', colorClass(quote.changePct))}>
                   {fmtPct(quote.changePct)} ({quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)})
                 </span>
               </>
             )}
           </div>
-          {quote && alertAnn && (
-            <div className="mt-1 flex items-center gap-1.5">
-              {alertAnn.isToday && (
-                <span className="rounded bg-amber-400/20 px-1 py-0.5 text-[10px] font-semibold text-amber-600">今日</span>
-              )}
-              {alertAnn.url ? (
-                <a href={alertAnn.url} target="_blank" rel="noreferrer"
-                  className={cn(
-                    'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium hover:underline',
-                    alertAnn.bull === 'up' ? 'bg-up/10 text-up'
-                      : alertAnn.bull === 'down' ? 'bg-down/10 text-down'
-                      : 'bg-ink-100 text-ink-500',
-                  )}
-                >
-                  <Newspaper size={10} />
-                  {alertAnn.title}
-                  <span className="opacity-60">· {alertAnn.label}</span>
-                </a>
-              ) : (
-                <span className={cn(
-                  'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium',
-                  alertAnn.bull === 'up' ? 'bg-up/10 text-up'
-                    : alertAnn.bull === 'down' ? 'bg-down/10 text-down'
-                    : 'bg-ink-100 text-ink-500',
-                )}>
-                  <Newspaper size={10} />
-                  {alertAnn.title}
-                  <span className="opacity-60">· {alertAnn.label}</span>
-                </span>
-              )}
-            </div>
-          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -557,7 +454,7 @@ function QuoteCard({ quote, code, klines, updatedAt, loading, modelLabel, analyz
           <button
             onClick={onAnalyze}
             disabled={analyzing || !quote}
-            className="flex items-center gap-1.5 rounded bg-ink-900 px-3 py-1.5 text-xs text-white hover:bg-ink-700 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded bg-ink-900 px-2.5 py-1 text-[10px] text-white hover:bg-ink-700 disabled:opacity-50"
           >
             {analyzing
               ? <RefreshCw size={12} className="animate-spin" />
@@ -578,6 +475,8 @@ function QuoteCard({ quote, code, klines, updatedAt, loading, modelLabel, analyz
             low={quote.low}
             prevClose={quote.prevClose}
             changePct={quote.changePct}
+            turnover={fundamental?.turnover}
+            volumeRatio={fundamental?.volumeRatio}
           />
           <DayPanel
             title="昨日"
@@ -587,6 +486,8 @@ function QuoteCard({ quote, code, klines, updatedAt, loading, modelLabel, analyz
             low={prevBar?.low ?? NaN}
             prevClose={ydayPrevClose}
             changePct={prevBar?.changePct ?? NaN}
+            turnover={null}
+            volumeRatio={null}
           />
         </div>
       )}
@@ -655,84 +556,111 @@ function FundamentalCard({
           <p className="mt-0.5 break-all text-[10px] text-ink-400">{error.message}</p>
         </div>
       ) : data ? (
-        <div className="space-y-1.5 text-xs tabular">
-          <FundRow k="PE(TTM)"  v={data.peTTM}                    desc={descPE(data.peTTM)} />
-          <FundRow k="PB"       v={data.pb}                        desc={descPB(data.pb)} />
-          <FundRow k="ROE"      v={roe}           suffix="%"     desc={descROE(roe)} />
-          <FundRow k="EPS"      v={eps}                            desc={descEPS(eps)} />
-          <FundRow k="换手率"   v={data.turnover}    suffix="%"     desc={descTurnover(data.turnover)} />
-          <FundRow k="量比"     v={data.volumeRatio}               desc={descVolumeRatio(data.volumeRatio)} />
-          <FundRow k="总市值"   v={data.totalMarketCap} format="yi" desc={descMarketCap(data.totalMarketCap)} />
-          <FundRow k="流通市值" v={data.floatMarketCap}  format="yi" desc={descMarketCap(data.floatMarketCap)} />
-
-          {/* ── 财报趋势区块 ── */}
-          {(reports.length > 0 || reportsLoading) && (
-            <div className="border-t border-ink-100 pt-1.5">
-              <div className="mb-1.5 text-[10px] font-semibold tracking-wide text-ink-400">近期业绩报告</div>
-              {reportsLoading ? (
-                <SkeletonRows rows={2} />
-              ) : (
-                <div className="space-y-2">
-                  {reports.map((r) => {
-                    // 综合判断：营收+净利均增长→看多，均下降→看空，否则中性
-                    const bothUp   = (r.revenueYoy ?? 0) > 0 && (r.profitYoy ?? 0) > 0;
-                    const bothDown = (r.revenueYoy ?? 0) < 0 && (r.profitYoy ?? 0) < 0;
-                    const bull = bothUp ? 'up' : bothDown ? 'down' : 'neutral';
-                    const bullText = bothUp ? '看多' : bothDown ? '看空' : '中性';
+        <div className="grid grid-cols-2 gap-3 text-xs tabular">
+          {/* 左侧：基本信息 */}
+          <div className="space-y-1.5">
+            <FundRow k="PE(TTM)"  v={data.peTTM}                    desc={descPE(data.peTTM)} />
+            <FundRow k="PB"       v={data.pb}                        desc={descPB(data.pb)} />
+            <FundRow k="ROE"      v={roe}           suffix="%"     desc={descROE(roe)} />
+            <FundRow k="EPS"      v={eps}                            desc={descEPS(eps)} />
+            <FundRow k="换手率"   v={data.turnover}    suffix="%"     desc={descTurnover(data.turnover)} />
+            <FundRow k="量比"     v={data.volumeRatio}               desc={descVolumeRatio(data.volumeRatio)} />
+            <FundRow k="总市值"   v={data.totalMarketCap} format="yi" desc={descMarketCap(data.totalMarketCap)} />
+            <FundRow k="流通市值" v={data.floatMarketCap}  format="yi" desc={descMarketCap(data.floatMarketCap)} />
+          </div>
+          {/* 右侧：近期业绩报告 */}
+          <div className="border-l border-ink-100 pl-3">
+            {(reports.length > 0 || reportsLoading) ? (
+              <>
+                <div className="mb-1.5 text-[10px] font-semibold tracking-wide text-ink-400">近期业绩报告</div>
+                {reportsLoading ? (
+                  <SkeletonRows rows={2} />
+                ) : (
+                  (() => {
+                    const maxRevenue = Math.max(...reports.map(r => Math.abs(r.revenue)), 1);
+                    const maxProfit  = Math.max(...reports.map(r => Math.abs(r.profit)), 1);
                     const fmtYoy = (v: number | null) =>
                       v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
                     return (
-                      <div key={r.reportDate} className="space-y-0.5">
-                        {/* 期标 + 情绪 */}
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-medium text-ink-700">{r.shortLabel}</span>
-                          <span className="text-ink-400">·</span>
-                          <span className="text-ink-500">{r.reportType}</span>
-                          <span className={cn(
-                            'ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium leading-none',
-                            bull === 'up'
-                              ? 'bg-up/10 text-up'
-                              : bull === 'down'
-                                ? 'bg-down/10 text-down'
-                                : 'bg-ink-100 text-ink-500',
-                          )}>
-                            {bullText}
-                          </span>
-                        </div>
-                        {/* 营收 + 净利 */}
-                        <div className="grid grid-cols-2 gap-x-2 text-[11px]">
-                          <div className="flex justify-between">
-                            <span className="text-ink-400">营收</span>
-                            <span className={cn(colorClass(r.revenueYoy ?? 0))}>
-                              {fmtYoy(r.revenueYoy)}
-                            </span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-ink-400">净利</span>
-                            <span className={cn(colorClass(r.profitYoy ?? 0))}>
-                              {fmtYoy(r.profitYoy)}
-                            </span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-ink-400">EPS</span>
-                            <span className="text-ink-700">
-                              {r.eps != null ? r.eps.toFixed(2) : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-ink-400">ROE</span>
-                            <span className={cn(colorClass(r.roe ?? 0))}>
-                              {r.roe != null ? r.roe.toFixed(2) + '%' : '—'}
-                            </span>
-                          </div>
-                        </div>
+                      <div className="space-y-1.5">
+                        {reports.map((r) => {
+                          const bothUp   = (r.revenueYoy ?? 0) > 0 && (r.profitYoy ?? 0) > 0;
+                          const bothDown = (r.revenueYoy ?? 0) < 0 && (r.profitYoy ?? 0) < 0;
+                          const bull = bothUp ? 'up' : bothDown ? 'down' : 'neutral';
+                          const bullText = bothUp ? '看多' : bothDown ? '看空' : '中性';
+                          const revPct = Math.max((Math.abs(r.revenue) / maxRevenue) * 100, 6);
+                          const profPct = Math.max((Math.abs(r.profit) / maxProfit) * 100, 6);
+                          const revColor = (r.revenueYoy ?? 0) >= 0;
+                          const profColor = (r.profitYoy ?? 0) >= 0;
+                          return (
+                            <div key={r.reportDate} className="space-y-1">
+                              {/* 期标 + 情绪 */}
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-medium text-ink-700">{r.shortLabel}</span>
+                                <span className="text-ink-400">·</span>
+                                <span className="text-ink-500">{r.reportType}</span>
+                                <span className={cn(
+                                  'ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium leading-none',
+                                  bull === 'up'
+                                    ? 'bg-up/10 text-up'
+                                    : bull === 'down'
+                                      ? 'bg-down/10 text-down'
+                                      : 'bg-ink-100 text-ink-500',
+                                )}>
+                                  {bullText}
+                                </span>
+                              </div>
+                              {/* 柱形图 */}
+                              <div className="space-y-0.5">
+                                <div className="flex items-center gap-1">
+                                  <span className="w-5 shrink-0 text-[9px] text-ink-400">营收</span>
+                                  <div className="flex-1">
+                                    <div
+                                      className={cn(
+                                        'flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition-all',
+                                        revColor ? 'bg-red-100/50 text-ink-600' : 'bg-green-100/50 text-ink-600',
+                                      )}
+                                      style={{ width: `${revPct}%` }}
+                                    >
+                                      {fmtAmount(r.revenue)}
+                                    </div>
+                                  </div>
+                                  <span className={cn('w-14 shrink-0 text-right text-[10px] tabular', revColor ? 'text-up' : 'text-down')}>
+                                    {fmtYoy(r.revenueYoy)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="w-5 shrink-0 text-[9px] text-ink-400">净利</span>
+                                  <div className="flex-1">
+                                    <div
+                                      className={cn(
+                                        'flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition-all',
+                                        profColor ? 'bg-red-100/50 text-ink-600' : 'bg-green-100/50 text-ink-600',
+                                      )}
+                                      style={{ width: `${profPct}%` }}
+                                    >
+                                      {fmtAmount(r.profit)}
+                                    </div>
+                                  </div>
+                                  <span className={cn('w-14 shrink-0 text-right text-[10px] tabular', profColor ? 'text-up' : 'text-down')}>
+                                    {fmtYoy(r.profitYoy)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
+                  })()
+                )}
+              </>
+            ) : (
+              <div className="flex h-full items-center justify-center text-[11px] text-ink-400">
+                暂无业绩报告
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         <SkeletonRows />
@@ -917,14 +845,14 @@ function PriceSparkline({ bars }: { bars: KlineBar[] }) {
     <svg viewBox={`0 0 ${W} ${H}`} style={{ height: 104 }} className="w-full" preserveAspectRatio="none">
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor={clr} stopOpacity="0.08" />
+          <stop offset="0%"   stopColor={clr} stopOpacity="0.04" />
           <stop offset="100%" stopColor={clr} stopOpacity="0"    />
         </linearGradient>
       </defs>
       <path d={area} fill={`url(#${gid})`} />
-      <path d={line} fill="none" stroke={clr} strokeWidth="0.8" opacity="0.35"
+      <path d={line} fill="none" stroke={clr} strokeWidth="0.8" opacity="0.2"
             strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={lx.toFixed(1)} cy={ly.toFixed(1)} r="1.5" fill={clr} opacity="0.4" />
+      <circle cx={lx.toFixed(1)} cy={ly.toFixed(1)} r="1.5" fill={clr} opacity="0.25" />
     </svg>
   );
 }
@@ -995,219 +923,6 @@ function analyzeAnn(title: string, type: string): AnnSentiment {
   return { bull: 'neutral', label: '常规公告' };
 }
 
-function AnnouncementCard({
-  data, relatedNews, industryNews, ts, loading,
-}: {
-  data:          { title: string; date: string; type: string; url?: string }[];
-  relatedNews:   import('@/types').NewsItem[];
-  industryNews:  import('@/types').NewsItem[];
-  ts:            number | null;
-  loading:       boolean;
-}) {
-  const [tab, setTab] = useState<'ann' | 'news' | 'industry'>('ann');
-
-  const todayStr = (() => {
-    const d = new Date();
-    return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  })();
-
-  const threeDaysAgo = new Date();
-  threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-  const recentNews = relatedNews.filter((n) => n.time && new Date(n.time) >= threeDaysAgo);
-
-  const todayAnns  = data.filter((a) => a.date.startsWith(todayStr));
-  const olderAnns  = data.filter((a) => !a.date.startsWith(todayStr));
-  const sortedData = [...todayAnns, ...olderAnns].slice(0, 8);
-
-  const threeDaysAgo2 = new Date();
-  threeDaysAgo2.setDate(threeDaysAgo2.getDate() - 3);
-  const recentIndustry = industryNews.filter((n) => n.time && new Date(n.time) >= threeDaysAgo2);
-
-  // tab 计数徽标样式
-  const badge = (active: boolean, count: number) =>
-    count > 0 ? (
-      <span className={cn(
-        'min-w-[16px] rounded-full px-1 text-center text-[9px]',
-        active ? 'bg-white/30 text-white' : 'bg-ink-200 text-ink-500',
-      )}>
-        {count}
-      </span>
-    ) : null;
-
-  return (
-    <DataCard title="近期公告" icon={<ScrollText size={12} />} ts={ts} loading={loading}>
-      {/* ── Tab 切换器 ─────────────────────────────────── */}
-      <div className="mb-3 flex gap-0.5 rounded-lg bg-ink-100 p-0.5 text-[11px]">
-        {([ 
-          { key: 'ann',      icon: <ScrollText size={10} />, label: '交易所公告', count: sortedData.length },
-          { key: 'news',     icon: <Newspaper  size={10} />, label: '相关新闻',   count: recentNews.length },
-          { key: 'industry', icon: <LineChart  size={10} />, label: '行业动态',   count: recentIndustry.length },
-        ] as const).map(({ key, icon, label, count }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={cn(
-              'flex flex-1 items-center justify-center gap-1 rounded-md py-1.5 font-medium transition-all',
-              tab === key
-                ? 'bg-ink-800 text-white shadow-sm'
-                : 'text-ink-500 hover:bg-ink-200 hover:text-ink-700',
-            )}
-          >
-            {icon}
-            <span>{label}</span>
-            {badge(tab === key, count)}
-          </button>
-        ))}
-      </div>
-
-      {/* ── 交易所公告 tab ──────────────────────────────── */}
-      {tab === 'ann' && (
-        sortedData.length > 0 ? (
-          <ul className="max-h-[340px] space-y-2.5 overflow-y-auto pr-0.5">
-            {sortedData.map((a, i) => {
-              const sent     = analyzeAnn(a.title, a.type);
-              const sentText = sent.bull === 'up' ? '看多' : sent.bull === 'down' ? '看空' : '中性';
-              const isToday  = a.date.startsWith(todayStr);
-              return (
-                <li key={i} className={cn('space-y-0.5 rounded px-1.5 py-1', isToday ? 'bg-amber-50' : 'hover:bg-ink-50')}>
-                  <div className="flex items-center gap-1.5 text-[10px]">
-                    <span className={cn('tabular', isToday ? 'font-semibold text-amber-600' : 'text-ink-400')}>
-                      {a.date}
-                    </span>
-                    {isToday && <span className="rounded bg-amber-400/20 px-1 py-0.5 font-semibold text-amber-600">今日</span>}
-                    {a.type && <span className="rounded bg-ink-100 px-1 py-0.5 text-ink-500">{a.type}</span>}
-                    <span className={cn(
-                      'ml-auto whitespace-nowrap rounded px-1.5 py-0.5 font-medium leading-none',
-                      sent.bull === 'up' ? 'bg-up/10 text-up'
-                        : sent.bull === 'down' ? 'bg-down/10 text-down'
-                        : 'bg-ink-100 text-ink-500',
-                    )}>
-                      {sent.label} · {sentText}
-                    </span>
-                  </div>
-                  {a.url ? (
-                    <a href={a.url} target="_blank" rel="noreferrer"
-                      className={cn('block text-xs leading-snug hover:text-ink-950 hover:underline',
-                        isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
-                      {a.title}
-                    </a>
-                  ) : (
-                    <p className={cn('text-xs leading-snug', isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
-                      {a.title}
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        ) : loading ? (
-          <SkeletonRows rows={3} />
-        ) : (
-          <div className="flex flex-col items-center justify-center gap-2 py-10 text-[11px] text-ink-400">
-            <ScrollText size={20} className="text-ink-200" />
-            近期无重大公告
-          </div>
-        )
-      )}
-
-      {/* ── 相关新闻 tab ────────────────────────────────── */}
-      {tab === 'news' && (
-        recentNews.length > 0 ? (
-          <ul className="max-h-[340px] space-y-2 overflow-y-auto pr-0.5">
-            {recentNews.map((n) => {
-              const nSent     = analyzeAnn(n.title, '');
-              const nSentText = nSent.bull === 'up' ? '看多' : nSent.bull === 'down' ? '看空' : '中性';
-              const isToday   = (n.time || '').startsWith(new Date().toISOString().slice(0, 10));
-              return (
-                <li key={n.id} className={cn('space-y-0.5 rounded px-1.5 py-1', isToday ? 'bg-amber-50' : 'hover:bg-ink-50')}>
-                  <div className="text-[10px] tabular text-ink-400">
-                    {(n.time || '').slice(5, 16)}
-                    {isToday && <span className="ml-1 rounded bg-amber-400/20 px-1 py-0.5 font-semibold text-amber-600">今日</span>}
-                  </div>
-                  {n.url ? (
-                    <a href={n.url} target="_blank" rel="noreferrer"
-                      className={cn('block text-xs leading-snug hover:text-ink-950 hover:underline',
-                        isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
-                      {n.title}
-                      <span className={cn('ml-1 font-medium',
-                        nSent.bull === 'up' ? 'text-up' : nSent.bull === 'down' ? 'text-down' : 'text-ink-400')}>
-                        ({nSentText})
-                      </span>
-                    </a>
-                  ) : (
-                    <p className={cn('text-xs leading-snug',
-                      isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
-                      {n.title}
-                      <span className={cn('ml-1 font-medium',
-                        nSent.bull === 'up' ? 'text-up' : nSent.bull === 'down' ? 'text-down' : 'text-ink-400')}>
-                        ({nSentText})
-                      </span>
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        ) : loading ? (
-          <SkeletonRows rows={3} />
-        ) : (
-          <div className="flex flex-col items-center justify-center gap-2 py-10 text-[11px] text-ink-400">
-            <Newspaper size={20} className="text-ink-200" />
-            近3天无相关新闻
-          </div>
-        )
-      )}
-
-      {/* ── 行业动态 tab ────────────────────────────────── */}
-      {tab === 'industry' && (
-        recentIndustry.length > 0 ? (
-          <ul className="max-h-[340px] space-y-2 overflow-y-auto pr-0.5">
-            {recentIndustry.map((n) => {
-              const nSent     = analyzeAnn(n.title, '');
-              const nSentText = nSent.bull === 'up' ? '看多' : nSent.bull === 'down' ? '看空' : '中性';
-              const isToday   = (n.time || '').startsWith(new Date().toISOString().slice(0, 10));
-              return (
-                <li key={n.id} className={cn('space-y-0.5 rounded px-1.5 py-1', isToday ? 'bg-amber-50' : 'hover:bg-ink-50')}>
-                  <div className="text-[10px] tabular text-ink-400">
-                    {(n.time || '').slice(5, 16)}
-                    {isToday && <span className="ml-1 rounded bg-amber-400/20 px-1 py-0.5 font-semibold text-amber-600">今日</span>}
-                  </div>
-                  {n.url ? (
-                    <a href={n.url} target="_blank" rel="noreferrer"
-                      className={cn('block text-xs leading-snug hover:text-ink-950 hover:underline',
-                        isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
-                      {n.title}
-                      <span className={cn('ml-1 font-medium',
-                        nSent.bull === 'up' ? 'text-up' : nSent.bull === 'down' ? 'text-down' : 'text-ink-400')}>({nSentText})</span>
-                    </a>
-                  ) : (
-                    <p className={cn('text-xs leading-snug', isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
-                      {n.title}
-                      <span className={cn('ml-1 font-medium',
-                        nSent.bull === 'up' ? 'text-up' : nSent.bull === 'down' ? 'text-down' : 'text-ink-400')}>({nSentText})</span>
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        ) : industryNews.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 py-10 text-[11px] text-ink-400">
-            <LineChart size={20} className="text-ink-200" />
-            未识别到所属行业
-          </div>
-        ) : loading ? (
-          <SkeletonRows rows={3} />
-        ) : (
-          <div className="flex flex-col items-center justify-center gap-2 py-10 text-[11px] text-ink-400">
-            <LineChart size={20} className="text-ink-200" />
-            近3天无行业动态
-          </div>
-        )
-      )}
-    </DataCard>
-  );
-}
 
 // ============================================================
 // 原子级子组件
@@ -1377,7 +1092,7 @@ function MFBarChart({ bars }: { bars: MFKlineBar[] }) {
               width={bw.toFixed(1)}
               height={h.toFixed(1)}
               fill={isIn ? '#fca5a5' : '#86efac'}
-              opacity={0.6}
+              opacity={0.4}
               rx="0.5"
             >
               <title>{`${bar.date.slice(5)}  ${bar.mainNet >= 0 ? '+' : ''}${bar.mainPct.toFixed(2)}%  ${fmtAmount(bar.mainNet)}`}</title>
@@ -1420,15 +1135,17 @@ function MFBarChart({ bars }: { bars: MFKlineBar[] }) {
 
 /** 单日行情面板：开/收/高/低/振幅/平均成本 + 相对基准价变动%，两列布局 */
 function DayPanel({
-  title, open, close, high, low, prevClose, changePct,
+  title, open, close, high, low, prevClose, changePct, turnover, volumeRatio,
 }: {
-  title:     string;
-  open:      number;
-  close:     number;
-  high:      number;
-  low:       number;
-  prevClose: number;
-  changePct: number;
+  title:       string;
+  open:        number;
+  close:       number;
+  high:        number;
+  low:         number;
+  prevClose:   number;
+  changePct:   number;
+  turnover:    number | null;
+  volumeRatio: number | null;
 }) {
   const pct = (v: number) =>
     Number.isFinite(v) && Number.isFinite(prevClose) && prevClose !== 0
@@ -1445,12 +1162,15 @@ function DayPanel({
     ? (open + close + high + low) / 4
     : NaN;
 
+  // 是否显示量比/换手（有数据时才显示）
+  const showExtra = turnover != null || volumeRatio != null;
+
   return (
     <div className="flex-1 px-3 py-2">
       <div className="mb-1.5 text-[11px] font-medium text-ink-400">{title}</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-[3px] text-xs">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-[3px] text-[11px]">
         {/* 左列 */}
-        <div className="grid grid-cols-[2.2rem,1fr,3.5rem] gap-x-1">
+        <div className="grid grid-cols-[1.8rem,1fr,3rem] gap-x-1">
           <span className="text-ink-400">开盘</span>
           <span className="text-right text-ink-700">{fmtPrice(open)}</span>
           <PctCell v={pct(open)} />
@@ -1460,12 +1180,20 @@ function DayPanel({
           <PctCell v={pct(high)} />
 
           <span className="text-ink-400">振幅</span>
-          <span className="text-right text-ink-700">{Number.isFinite(amplitude) ? `+${amplitude.toFixed(2)}%` : '—'}</span>
-          <span className="w-[3.5rem]" />
+          <span className="text-right text-ink-700">{Number.isFinite(amplitude) ? `${amplitude.toFixed(2)}%` : '—'}</span>
+          <span className="w-[3rem]" />
+
+          {showExtra && (
+            <>
+              <span className="text-ink-400">量比</span>
+              <span className="text-right text-ink-700">{volumeRatio != null ? volumeRatio.toFixed(2) : '—'}</span>
+              <span className="w-[3rem]" />
+            </>
+          )}
         </div>
 
         {/* 右列 */}
-        <div className="grid grid-cols-[2.2rem,1fr,3.5rem] gap-x-1">
+        <div className="grid grid-cols-[1.8rem,1fr,3rem] gap-x-1">
           <span className="text-ink-400">收盘</span>
           <span className="text-right text-ink-700">{fmtPrice(close)}</span>
           <PctCell v={changePct} />
@@ -1474,9 +1202,21 @@ function DayPanel({
           <span className="text-right text-ink-700">{fmtPrice(low)}</span>
           <PctCell v={pct(low)} />
 
-          <span className="text-ink-400">均价</span>
-          <span className="text-right text-ink-700">{fmtPrice(avgCost)}</span>
-          <PctCell v={pct(avgCost)} />
+          {!showExtra && (
+            <>
+              <span className="text-ink-400">均价</span>
+              <span className="text-right text-ink-700">{fmtPrice(avgCost)}</span>
+              <PctCell v={pct(avgCost)} />
+            </>
+          )}
+
+          {showExtra && (
+            <>
+              <span className="text-ink-400">换手</span>
+              <span className="text-right text-ink-700">{turnover != null ? turnover.toFixed(2) + '%' : '—'}</span>
+              <span className="w-[3rem]" />
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1744,6 +1484,84 @@ function AnalysisModal({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 导出组件：近期公告侧边栏面板（与财经快讯共同展示在右侧栏）
+// ============================================================
+
+export function AnnouncementPanel() {
+  const selectedCode = useAppStore((s) => s.selectedCode);
+
+  const annQ = usePolling(
+    () => selectedCode
+      ? fetchAnnouncements(selectedCode, 8)
+      : Promise.resolve({ data: [], ts: Date.now() }),
+    () => adaptiveInterval(10 * 60_000, 30 * 60_000),
+    [selectedCode],
+  );
+  const announcements = annQ.data?.data ?? [];
+
+  const todayStr = (() => {
+    const d = new Date();
+    return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+
+  const todayAnns  = announcements.filter((a) => a.date.startsWith(todayStr));
+  const olderAnns  = announcements.filter((a) => !a.date.startsWith(todayStr));
+  const sortedData = [...todayAnns, ...olderAnns].slice(0, 8);
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* 公告列表 */}
+      <ul className="flex-1 divide-y divide-ink-100 overflow-y-auto">
+        {!selectedCode && (
+          <li className="px-4 py-8 text-center text-xs text-ink-400">请先选择一只股票</li>
+        )}
+        {selectedCode && annQ.loading && !sortedData.length && (
+          <li className="px-4 py-8 text-center text-xs text-ink-400">加载中…</li>
+        )}
+        {selectedCode && !annQ.loading && !sortedData.length && (
+          <li className="px-4 py-8 text-center text-xs text-ink-400">近期无重大公告</li>
+        )}
+        {sortedData.map((a, i) => {
+          const sent     = analyzeAnn(a.title, a.type);
+          const sentText = sent.bull === 'up' ? '看多' : sent.bull === 'down' ? '看空' : '中性';
+          const isToday  = a.date.startsWith(todayStr);
+          return (
+            <li key={i} className={cn('px-4 py-2.5 hover:bg-ink-50 transition-colors', isToday && 'bg-amber-50/50')}>
+              <div className="flex items-center gap-1.5 text-[10px] mb-0.5">
+                <span className={cn('tabular', isToday ? 'font-semibold text-amber-600' : 'text-ink-400')}>
+                  {a.date}
+                </span>
+                {isToday && <span className="rounded bg-amber-400/20 px-1 py-0.5 font-semibold text-amber-600">今日</span>}
+                {a.type && <span className="rounded bg-ink-100 px-1 py-0.5 text-ink-500">{a.type}</span>}
+                <span className={cn(
+                  'ml-auto whitespace-nowrap rounded px-1.5 py-0.5 font-medium leading-none',
+                  sent.bull === 'up' ? 'bg-up/10 text-up'
+                    : sent.bull === 'down' ? 'bg-down/10 text-down'
+                    : 'bg-ink-100 text-ink-500',
+                )}>
+                  {sent.label} · {sentText}
+                </span>
+              </div>
+              {a.url ? (
+                <a href={a.url} target="_blank" rel="noreferrer"
+                  className={cn('block text-xs leading-snug hover:text-ink-950 hover:underline',
+                    isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
+                  {a.title}
+                </a>
+              ) : (
+                <p className={cn('text-xs leading-snug', isToday ? 'font-semibold text-ink-900' : 'text-ink-700')}>
+                  {a.title}
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

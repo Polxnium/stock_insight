@@ -325,7 +325,7 @@ async function handleFundamental(req, res, url) {
 
 // ====================================================================
 // 2c. 主力资金流向  /api/moneyflow?code=sh600519
-//    缓存 10s。
+//    不缓存，实时查询。
 //    数据源：datacenter-web RPT_DMSK_TS_FUNDFLOW（真实五类资金流，含中单/小单）
 //    单位：万元（流入/流出/净额），百分比基于 DEAL_AMOUNT 计算
 // ====================================================================
@@ -343,63 +343,60 @@ async function handleMoneyFlow(req, res, url) {
     `&source=WEB&client=WEB`;
 
   try {
-    const data = await withCache(`mf:${code}`, 10_000, async () => {
-      console.log(`[MoneyFlow] 请求 -> datacenter RPT_DMSK_TS_FUNDFLOW: ${code}`);
-      try {
-        const r = await fetchWithRetry(target, {
-          headers: { Referer: 'https://data.eastmoney.com/' },
-          timeoutMs: 10000,
-          retries: 3,
-          retryDelayMs: 600,
-        });
+    // 不缓存：每次请求实时查询最新资金流数据，确保数据无延迟
+    console.log(`[MoneyFlow] 实时请求 -> datacenter RPT_DMSK_TS_FUNDFLOW: ${code}`);
+    try {
+      const r = await fetchWithRetry(target, {
+        headers: { Referer: 'https://data.eastmoney.com/' },
+        timeoutMs: 6000,   // 超时缩短至 6s，加快失败恢复
+        retries: 1,        // 只重试 1 次，避免长时间阻塞
+        retryDelayMs: 300,
+      });
 
-        const j = await r.json();
-        const item = j?.result?.data?.[0];
+      const j = await r.json();
+      const item = j?.result?.data?.[0];
 
-        if (!item) {
-          console.warn(`[MoneyFlow] datacenter返回空: ${code}`);
-          return null;
-        }
-
-        const dealAmount    = item.DEAL_AMOUNT       || 0;
-        const mainNet       = item.NET_INFLOW         || 0;
-        const superLargeNet = item.SUPERDEAL_NET      || 0;
-        const largeNet      = item.BIGDEAL_NET        || 0;
-        const mediumNet     = item.MIDDEAL_NET        || 0;
-        const smallNet      = item.SMALLDEAL_NET      || 0;
-
-        const mainPct       = dealAmount ? +((mainNet       / dealAmount) * 100).toFixed(2) : 0;
-        const superLargePct = dealAmount ? +((superLargeNet / dealAmount) * 100).toFixed(2) : 0;
-        const largePct      = dealAmount ? +((largeNet      / dealAmount) * 100).toFixed(2) : 0;
-        const mediumPct     = dealAmount ? +((mediumNet     / dealAmount) * 100).toFixed(2) : 0;
-        const smallPct      = dealAmount ? +((smallNet      / dealAmount) * 100).toFixed(2) : 0;
-
-        const W = 10000;
-        const result = {
-          code,
-          mainNet: mainNet * W, mainPct,
-          superLargeNet: superLargeNet * W, superLargePct,
-          largeNet: largeNet * W, largePct,
-          mediumNet: mediumNet * W, mediumPct,
-          smallNet:  smallNet * W, smallPct,
-          northNet: null, northPct: null,
-          northBuy: null, northSell: null,
-          northVol: null, northAmount: null, northDate: null,
-        };
-
-        console.log(
-          `[MoneyFlow] ✓ ${code} 主力:${(mainNet/1e4).toFixed(2)}亿(${mainPct}%)` +
-          ` 超大单:${superLargeNet.toFixed(0)}万 大单:${largeNet.toFixed(0)}万` +
-          ` 中单:${mediumNet.toFixed(0)}万 小单:${smallNet.toFixed(0)}万`
-        );
-        return result;
-      } catch (e) {
-        console.error(`[MoneyFlow] datacenter请求失败: ${e.message}`);
-        return null;
+      if (!item) {
+        console.warn(`[MoneyFlow] datacenter返回空: ${code}`);
+        return json(res, 200, { ok: true, data: null, ts: Date.now() });
       }
-    });
 
-    json(res, 200, { ok: true, data: data || null, ts: Date.now() });
+      const dealAmount    = item.DEAL_AMOUNT       || 0;
+      const mainNet       = item.NET_INFLOW         || 0;
+      const superLargeNet = item.SUPERDEAL_NET      || 0;
+      const largeNet      = item.BIGDEAL_NET        || 0;
+      const mediumNet     = item.MIDDEAL_NET        || 0;
+      const smallNet      = item.SMALLDEAL_NET      || 0;
+
+      const mainPct       = dealAmount ? +((mainNet       / dealAmount) * 100).toFixed(2) : 0;
+      const superLargePct = dealAmount ? +((superLargeNet / dealAmount) * 100).toFixed(2) : 0;
+      const largePct      = dealAmount ? +((largeNet      / dealAmount) * 100).toFixed(2) : 0;
+      const mediumPct     = dealAmount ? +((mediumNet     / dealAmount) * 100).toFixed(2) : 0;
+      const smallPct      = dealAmount ? +((smallNet      / dealAmount) * 100).toFixed(2) : 0;
+
+      const W = 10000;
+      const result = {
+        code,
+        mainNet: mainNet * W, mainPct,
+        superLargeNet: superLargeNet * W, superLargePct,
+        largeNet: largeNet * W, largePct,
+        mediumNet: mediumNet * W, mediumPct,
+        smallNet:  smallNet * W, smallPct,
+        northNet: null, northPct: null,
+        northBuy: null, northSell: null,
+        northVol: null, northAmount: null, northDate: null,
+      };
+
+      console.log(
+        `[MoneyFlow] ✓ ${code} 主力:${(mainNet/1e4).toFixed(2)}亿(${mainPct}%)` +
+        ` 超大单:${superLargeNet.toFixed(0)}万 大单:${largeNet.toFixed(0)}万` +
+        ` 中单:${mediumNet.toFixed(0)}万 小单:${smallNet.toFixed(0)}万`
+      );
+      json(res, 200, { ok: true, data: result, ts: Date.now() });
+    } catch (e) {
+      console.error(`[MoneyFlow] datacenter请求失败: ${e.message}`);
+      json(res, 200, { ok: true, data: null, ts: Date.now() });
+    }
   } catch (e) {
     console.error(`[MoneyFlow] 错误: ${e.message}`);
     json(res, 200, { ok: true, data: null, ts: Date.now() });

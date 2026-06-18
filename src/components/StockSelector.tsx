@@ -127,7 +127,7 @@ export function StockSelector({ stocks }: { stocks: SelectorStock[] }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <TrendingUp size={16} className="text-up" />
-          <h2 className="text-sm font-semibold text-ink-900">量化选股</h2>
+          <h2 className="text-xs font-semibold text-ink-900">量化</h2>
         </div>
         <span className="text-xs text-ink-400">基于多因子模型评分</span>
       </div>

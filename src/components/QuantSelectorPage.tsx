@@ -149,12 +149,12 @@ export function QuantSelectorPage({ stocks, loading, updatedAt, onRefresh }: Qua
       {/* 页面标题栏 */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gradient-to-br from-red-500 to-orange-500">
-            <TrendingUp size={20} className="text-white" />
+          <div className="p-1.5 rounded-lg bg-gradient-to-br from-red-500 to-orange-500">
+            <TrendingUp size={14} className="text-white" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink-900">量化选股</h2>
-            <p className="text-xs text-ink-400">基于多因子模型的智能选股系统</p>
+            <h2 className="text-xs font-bold text-ink-900">量化</h2>
+            <p className="text-[10px] text-ink-400">基于多因子模型的智能选股系统</p>
           </div>
         </div>
         

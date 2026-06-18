@@ -58,9 +58,11 @@ export function WatchList() {
 
     if (!searchAddQuery.trim()) {
       setSearchResults([]);
+      setShowSearchResults(false);
       return;
     }
 
+    setShowSearchResults(true);
     debounceRef.current = window.setTimeout(async () => {
       setSearchLoading(true);
       try {
@@ -227,9 +229,7 @@ export function WatchList() {
             value={searchAddQuery}
             onChange={(e) => {
               setSearchAddQuery(e.target.value);
-              setShowSearchResults(true);
             }}
-            onFocus={() => setShowSearchResults(true)}
             onKeyDown={(e) => e.key === 'Enter' && e.preventDefault()}
             placeholder="搜索名称或代码"
             className="flex-1 bg-transparent py-0.5 text-xs outline-none placeholder:text-ink-300"

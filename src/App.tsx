@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { TrendingUp, BarChart3, Search, Flame, Sparkles, Wallet, Target, Users, Globe } from 'lucide-react';
+import { TrendingUp, BarChart3, Search, Flame, Sparkles, Wallet, Target, Users, Globe, Zap, ScrollText, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { IndexBar } from '@/components/IndexBar';
 import { WatchList } from '@/components/WatchList';
 import { PositionList } from '@/components/PositionList';
 import { NewsFeed } from '@/components/NewsFeed';
-import { StockAnalysis } from '@/components/StockAnalysis';
+import { StockAnalysis, AnnouncementPanel } from '@/components/StockAnalysis';
+import { cn } from '@/lib/format';
 import { ModelPicker } from '@/components/ModelPicker';
 import { QuantSelectorPage } from '@/components/QuantSelectorPage';
 import { StockSelectorPage } from '@/components/StockFilter/index';
@@ -23,13 +24,14 @@ export default function App() {
   const [showNews, setShowNews] = useState(true);
   const [activeTab, setActiveTab] = useState<TabType>('main');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('positions');
+  const [rightTab, setRightTab] = useState<'news' | 'ann'>('news');
   const [quantMode, setQuantMode] = useState<QuantMode>('watchlist');
   const { stocks: selectedStocks, loading: selectorLoading, updatedAt: selectorUpdatedAt, refresh: refreshSelector } = useQuantSelector();
   const { signals, unreadCount, markAsRead, clearAll } = useSignalAlert();
 
   const tabs = [
     { id: 'main' as TabType, label: '主页', icon: BarChart3 },
-    { id: 'quant' as TabType, label: '量化选股', icon: TrendingUp },
+    { id: 'quant' as TabType, label: '量化', icon: TrendingUp },
   ];
 
   const sidebarTabs = [
@@ -69,7 +71,7 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                className={`flex items-center gap-2 px-4 py-2 text-xs font-medium transition-colors ${
                   isActive
                     ? 'text-ink-900 border-b-2 border-ink-900 bg-white'
                     : 'text-ink-500 hover:text-ink-700 hover:bg-ink-50'
@@ -142,7 +144,60 @@ export default function App() {
               <StockAnalysis />
             </section>
             <aside className={`shrink-0 transition-[width] duration-300 ${showNews ? 'w-72' : 'w-10'}`}>
-              <NewsFeed collapsed={!showNews} onToggle={() => setShowNews((v) => !v)} />
+              {showNews ? (
+                <div className="flex h-[715px] flex-col rounded-lg border border-ink-200 bg-white">
+                  {/* 顶部 Tab 切换 */}
+                  <div className="flex shrink-0 items-center justify-between border-b border-ink-100 px-3 py-1.5">
+                    <div className="flex gap-0.5">
+                      {[
+                        { key: 'news' as const, label: '财经快讯', icon: Zap },
+                        { key: 'ann'  as const, label: '近期公告', icon: ScrollText },
+                      ].map(({ key, label, icon: Icon }) => (
+                        <button
+                          key={key}
+                          onClick={() => setRightTab(key)}
+                          className={cn(
+                            'flex items-center gap-1 rounded px-2.5 py-1 text-[10px] font-medium transition-colors',
+                            rightTab === key
+                              ? 'bg-ink-900 text-white'
+                              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-700',
+                          )}
+                        >
+                          <Icon size={11} />
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => setShowNews(false)}
+                      title="收起"
+                      className="rounded-md bg-ink-50 p-1.5 text-ink-500 transition-all hover:bg-ink-900 hover:text-white hover:shadow-sm"
+                    >
+                      <ChevronsRight size={16} />
+                    </button>
+                  </div>
+                  {/* 内容区 */}
+                  <div className="flex-1 overflow-hidden">
+                    {rightTab === 'news' ? <NewsFeed /> : <AnnouncementPanel />}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-full min-h-[200px] flex-col items-center justify-center rounded-lg border border-ink-200 bg-gradient-to-b from-white to-ink-50">
+                  <button
+                    onClick={() => setShowNews(true)}
+                    title="展开资讯"
+                    className="group flex flex-col items-center gap-3 rounded-lg px-2 py-4 transition-all hover:bg-white hover:shadow-sm"
+                  >
+                    <ChevronsLeft size={18} className="text-ink-400 transition-transform group-hover:scale-110 group-hover:text-ink-700" />
+                    <span
+                      className="text-[11px] font-medium text-ink-500 select-none group-hover:text-ink-800"
+                      style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
+                    >
+                      资讯
+                    </span>
+                  </button>
+                </div>
+              )}
             </aside>
           </>
         ) : (
